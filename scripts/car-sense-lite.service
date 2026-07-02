@@ -1,0 +1,28 @@
+[Unit]
+Description=car-sense-lite: edge car detection
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/car-sense-lite
+ExecStart=/usr/bin/python3 run.py -c /opt/car-sense-lite/config.yaml
+ExecStop=/bin/kill -TERM $MAINPID
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# 资源限制 (适配 4 核 4G 边缘设备)
+# 默认 2 worker 进程, Linux 上单 worker RSS ~250MB, 总 ~500MB
+# 留足余量给 OS 和 RTSP buffer
+CPUQuota=380%
+MemoryMax=2500M
+
+# 优雅关闭
+KillSignal=SIGTERM
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target

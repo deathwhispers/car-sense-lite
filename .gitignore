@@ -1,0 +1,32 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg
+*.egg-info/
+.venv/
+venv/
+env/
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# 配置和日志
+config.yaml
+config.test.yaml
+config.bench.yaml
+logs/
+*.log
+
+# 测试产物
+test_videos/
+test_output/
+*.mp4
+*.avi
+
+# 系统临时
+*.pid
+.coverage
+.pytest_cache/

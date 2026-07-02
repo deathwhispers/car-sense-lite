@@ -1,0 +1,42 @@
+# 排除不需要打进镜像的内容
+.venv/
+test_videos/
+logs/
+*.log
+.git/
+.gitignore
+.idea/
+.vscode/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.python-version
+.coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+*.egg-info/
+dist/
+build/
+
+# 测试文件不进镜像
+tests/
+scripts/gen_sample_video.py
+scripts/bench.py
+scripts/bench_algorithms.py
+scripts/install_systemd.sh
+scripts/car-sense-lite.service
+scripts/mock_webhook.py
+scripts/stop.sh
+
+# 文档不进镜像 (减小体积)
+*.md
+LICENSE
+CONTRIBUTING.md
+
+# 用户配置不进镜像 (运行时挂载)
+config.yaml
+config.test.yaml
+config.bench.yaml

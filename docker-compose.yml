@@ -1,0 +1,61 @@
+# Docker Compose 快速部署
+# 用法:
+#   1. cp config.example.yaml config.yaml   # 编辑 RTSP 和 webhook 地址
+#   2. docker compose build                  # 构建镜像
+#   3. docker compose up -d                  # 启动 (后台)
+#   4. docker compose logs -f                # 查看日志
+#   5. docker compose down                   # 停止
+
+services:
+  car-sense-lite:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: car-sense-lite:latest
+    container_name: car-sense-lite
+    restart: unless-stopped
+
+    # host 网络: 直接访问局域网摄像头 (推荐, RTSP 通常在内网)
+    # 如果用 bridge 网络, 需要额外配置端口映射 (但 RTSP 不需要)
+    network_mode: host
+
+    # 挂载配置和日志
+    volumes:
+      # 配置文件 (只读, 必须存在, 可用 config.example.yaml 模板创建)
+      - ./config.yaml:/app/config.yaml:ro
+      # 日志目录 (可选, 容器外持久化)
+      - ./logs:/app/logs
+
+    # 资源限制 (4 核 4G 边缘设备推荐)
+    deploy:
+      resources:
+        limits:
+          cpus: '3.8'        # 用满 4 核 (留 5% 给系统)
+          memory: 2500M      # 2.5GB 上限 (留 1.5GB 给系统)
+        reservations:
+          cpus: '1.0'
+          memory: 500M
+
+    # 环境变量
+    environment:
+      - TZ=Asia/Shanghai         # 时区, 影响日志 timestamp
+      - PYTHONUNBUFFERED=1       # Python stdout 不缓冲, 实时看日志
+
+    # 优雅停止 (给 worker 15s 处理完当前帧)
+    stop_grace_period: 15s
+    stop_signal: SIGTERM
+
+    # 日志轮转 (防止单文件撑爆磁盘)
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+    # 健康检查 (镜像里已定义, 这里可覆盖参数)
+    healthcheck:
+      test: ["CMD", "pgrep", "-f", "run.py -c /app/config.yaml"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

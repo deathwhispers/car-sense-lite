@@ -1,0 +1,66 @@
+# car-sense-lite 配置示例
+# 复制为 config.yaml 后按需修改
+
+supervisor:
+  workers: 2              # worker 进程数 (OpenCV 单 worker ~560MB 物理内存)
+                          # 4G 设备: 建议 2 (总占用 ~1.2GB)
+                          # 8G 设备: 可用 4 (总占用 ~2.3GB)
+  log_level: INFO         # DEBUG / INFO / WARNING / ERROR
+  log_file: ""            # 空字符串 = 输出到 stdout
+
+notifier:
+  http:
+    url: "http://127.0.0.1:8000/webhook/car"   # 告警接收地址
+    timeout: 3
+    retry: 2
+    headers:
+      X-Source: car-sense-lite
+
+channels:
+  - id: "gate_1"
+    name: "大门入口"
+    source: "rtsp://admin:admin123@192.168.1.10:554/Streaming/Channels/102"  # 720p 辅码流
+    enabled: true
+    detector:
+      algorithm: frame_diff    # mog2 / running_avg / frame_diff (推荐 frame_diff 性能最佳)
+      downsample: 0.5          # 720p → 360p
+      frame_skip: 2            # 15fps → 7.5fps
+      min_area: 1500
+      trigger_frames: 3
+      cooldown_sec: 5
+      warmup_sec: 5
+      # mog2 专属 (algorithm=mog2 时生效)
+      history: 200
+      var_threshold: 32
+      # running_avg / frame_diff 专属 (algorithm=其他时生效)
+      diff_threshold: 25
+      # running_avg 专属
+      bg_alpha: 0.05
+      # frame_diff 专属
+      diff_decay: 5
+      # roi 留空 = 全屏
+      roi:
+        - [200, 300]
+        - [1000, 300]
+        - [1100, 900]
+        - [150, 900]
+
+  - id: "gate_2"
+    name: "侧门入口"
+    source: "rtsp://admin:admin123@192.168.1.11:554/Streaming/Channels/102"
+    enabled: true
+    detector:
+      algorithm: running_avg   # 这个通道用 sliding average
+      downsample: 0.5
+      frame_skip: 2
+      min_area: 1200
+      trigger_frames: 3
+      cooldown_sec: 5
+      warmup_sec: 5
+      diff_threshold: 25
+      bg_alpha: 0.05
+      roi:
+        - [200, 300]
+        - [1000, 300]
+        - [1100, 900]
+        - [150, 900]
