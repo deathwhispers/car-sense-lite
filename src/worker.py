@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from typing import Optional
+from typing import Optional, Tuple
 
 import cv2
 import numpy as np
@@ -40,6 +40,10 @@ class ChannelWorker:
         self.detector = create_detector(ch.detector)
         self.stream = StreamReader(ch.source, ch.id)
         self.stats_interval = stats_interval
+        # 预分配 resize 输出 buffer (省每帧 ~0.3ms numpy 分配)
+        # 真实形状在拿到首帧后确定
+        self._resize_dst: Optional[np.ndarray] = None
+        self._resize_shape: Optional[Tuple[int, int]] = None  # (h, w)
 
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
@@ -92,20 +96,29 @@ class ChannelWorker:
                     (self._frame_seq % self.ch.detector.frame_skip) != 0:
                 continue
 
-            # 降采样
+            # 降采样 (复用预分配 buffer, 省 numpy 分配开销)
             if self.ch.detector.downsample < 1.0:
-                small = cv2.resize(
-                    frame, None,
-                    fx=self.ch.detector.downsample,
-                    fy=self.ch.detector.downsample,
-                    interpolation=cv2.INTER_AREA,
-                )
+                h, w = frame.shape[:2]
+                ds = self.ch.detector.downsample
+                target_h = int(h * ds)
+                target_w = int(w * ds)
+                if (self._resize_shape != (target_h, target_w)
+                        or self._resize_dst is None):
+                    self._resize_dst = np.empty(
+                        (target_h, target_w, 3), dtype=frame.dtype
+                    )
+                    self._resize_shape = (target_h, target_w)
+                cv2.resize(frame, (target_w, target_h),
+                           dst=self._resize_dst,
+                           fx=ds, fy=ds,
+                           interpolation=cv2.INTER_AREA)
+                small = self._resize_dst
             else:
                 small = frame
 
             # 检测
-            has_car = self.detector.detect(small)
-            self._on_detection(has_car, max_area=0)
+            result = self.detector.detect(small)
+            self._on_detection(result.has_car, result.max_area)
             self._frames_processed += 1
             self._maybe_log_stats()
 

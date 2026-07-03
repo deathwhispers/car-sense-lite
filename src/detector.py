@@ -12,6 +12,7 @@
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Optional
 
 import cv2
@@ -19,6 +20,22 @@ import numpy as np
 
 from .config import DetectorConfig
 from .roi import RoiMask
+
+
+@dataclass(frozen=True, slots=True)
+class Detection:
+    """单帧检测结果
+
+    支持:
+        if det.detect(frame): ...           # __bool__
+        r = det.detect(frame); r.has_car    # 字段访问
+        has_car, area = det.detect(frame)   # 解包
+    """
+    has_car: bool
+    max_area: int = 0  # 最大运动区域面积 (像素²), 无车时为 0
+
+    def __bool__(self) -> bool:
+        return self.has_car
 
 
 class BaseDetector:
@@ -30,7 +47,8 @@ class BaseDetector:
         self.cfg = cfg
         self.roi = RoiMask(cfg.roi)
 
-    def detect(self, frame_bgr: np.ndarray) -> bool:
+    def detect(self, frame_bgr: np.ndarray) -> Detection:
+        """单帧检测, 返回 Detection(has_car, max_area)"""
         raise NotImplementedError
 
     def reset(self) -> None:
@@ -58,16 +76,17 @@ class Mog2Detector(BaseDetector):
         self._kernel_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
         self._kernel_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
 
-    def detect(self, frame_bgr: np.ndarray) -> bool:
+    def detect(self, frame_bgr: np.ndarray) -> Detection:
         if frame_bgr is None or frame_bgr.size == 0:
-            return False
+            return Detection(False, 0)
         gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
         if not self.roi.is_full:
             gray = self.roi.apply(gray)
         fg_mask = self.bg_subtractor.apply(gray)
         fg_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_OPEN, self._kernel_open)
         fg_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_CLOSE, self._kernel_close)
-        return self._max_contour_area(fg_mask) >= self.cfg.min_area
+        max_area = self._max_contour_area(fg_mask)
+        return Detection(max_area >= self.cfg.min_area, max_area)
 
     def reset(self) -> None:
         self.bg_subtractor = cv2.createBackgroundSubtractorMOG2(
@@ -102,9 +121,9 @@ class RunningAvgDetector(BaseDetector):
         self._kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
         self._alpha = max(0.001, min(1.0, cfg.bg_alpha))
 
-    def detect(self, frame_bgr: np.ndarray) -> bool:
+    def detect(self, frame_bgr: np.ndarray) -> Detection:
         if frame_bgr is None or frame_bgr.size == 0:
-            return False
+            return Detection(False, 0)
         gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
         if not self.roi.is_full:
             gray = self.roi.apply(gray)
@@ -112,7 +131,7 @@ class RunningAvgDetector(BaseDetector):
 
         if self._bg is None:
             self._bg = gray_f.copy()
-            return False
+            return Detection(False, 0)
 
         # 当前帧与背景的差
         diff = cv2.absdiff(gray_f, self._bg)
@@ -124,7 +143,8 @@ class RunningAvgDetector(BaseDetector):
         fg_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_OPEN, self._kernel)
         # 更新背景 (慢速学习)
         cv2.accumulateWeighted(gray_f, self._bg, self._alpha)
-        return cv2.countNonZero(fg_mask) >= self.cfg.min_area
+        area = cv2.countNonZero(fg_mask)
+        return Detection(area >= self.cfg.min_area, area)
 
     def reset(self) -> None:
         self._bg = None
@@ -150,16 +170,16 @@ class FrameDiffDetector(BaseDetector):
         self._kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
         self._decay = max(1, int(cfg.diff_decay))
 
-    def detect(self, frame_bgr: np.ndarray) -> bool:
+    def detect(self, frame_bgr: np.ndarray) -> Detection:
         if frame_bgr is None or frame_bgr.size == 0:
-            return False
+            return Detection(False, 0)
         gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
         if not self.roi.is_full:
             gray = self.roi.apply(gray)
 
         if self._prev_gray is None:
             self._prev_gray = gray
-            return False
+            return Detection(False, 0)
 
         # 帧差
         diff = cv2.absdiff(gray, self._prev_gray)
@@ -176,7 +196,8 @@ class FrameDiffDetector(BaseDetector):
         np.maximum(self._acc_mask, fg, out=self._acc_mask)
         # 更新 prev
         self._prev_gray = gray
-        return cv2.countNonZero(self._acc_mask) >= self.cfg.min_area
+        area = cv2.countNonZero(self._acc_mask)
+        return Detection(area >= self.cfg.min_area, area)
 
     def reset(self) -> None:
         self._prev_gray = None

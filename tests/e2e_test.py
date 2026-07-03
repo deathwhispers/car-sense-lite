@@ -92,7 +92,7 @@ class FileLoopDriver:
                            fx=self.channel.detector.downsample,
                            fy=self.channel.detector.downsample,
                            interpolation=cv2.INTER_AREA)
-        self.detector.detect(small)
+        self.detector.detect(small)  # 接受 Detection 返回值, 丢弃用于初始化背景
         cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
 
         while not self._stop.is_set():
@@ -107,7 +107,7 @@ class FileLoopDriver:
                                fx=self.channel.detector.downsample,
                                fy=self.channel.detector.downsample,
                                interpolation=cv2.INTER_AREA)
-            has_car = self.detector.detect(small)
+            has_car = self.detector.detect(small).has_car
             if has_car:
                 self._counter += 1
             else:

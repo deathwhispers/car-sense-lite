@@ -28,6 +28,11 @@ def _worker_entry(channels: List[ChannelConfig],
                   stop_event: mp.Event,
                   log_level: str) -> None:
     """worker 进程入口: 在子进程里跑一组通道 + 独立 HTTP notifier"""
+    import cv2
+    # 多 worker 进程模型下, 限制 OpenCV 内部线程数避免与进程调度抢 CPU
+    # 4 worker 进程时, 每个 worker 已被 OS 限制到 1 核, OpenCV 多线程无意义且有害
+    cv2.setNumThreads(1)
+
     from .logger import setup_logger
     setup_logger("car-sense", log_level)
 
