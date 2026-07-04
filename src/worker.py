@@ -84,6 +84,10 @@ class ChannelWorker:
             logger.warning("[%s] stream not connected at start, will retry in loop",
                            self.ch.id)
 
+        # 预计算跳帧模数
+        frame_skip = self.ch.detector.frame_skip
+        skip_mod = frame_skip if frame_skip > 1 else 0
+
         while not self._stop_event.is_set():
             frame = self.stream.read()
             if frame is None:
@@ -91,10 +95,14 @@ class ChannelWorker:
                 continue
 
             self._frame_seq += 1
-            # 跳帧
-            if self.ch.detector.frame_skip > 1 and \
-                    (self._frame_seq % self.ch.detector.frame_skip) != 0:
-                continue
+            # 跳帧 - 使用位运算优化（如果frame_skip是2的幂）
+            if skip_mod > 0:
+                if skip_mod & (skip_mod - 1) == 0:  # 2的幂
+                    if self._frame_seq & (skip_mod - 1) != 0:
+                        continue
+                else:
+                    if self._frame_seq % skip_mod != 0:
+                        continue
 
             # 降采样 (复用预分配 buffer, 省 numpy 分配开销)
             if self.ch.detector.downsample < 1.0:
