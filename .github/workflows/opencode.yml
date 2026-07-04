@@ -16,9 +16,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       id-token: write
-      contents: read
-      pull-requests: read
-      issues: read
+      contents: write        # 允许修改代码、创建分支
+      pull-requests: write   # 允许创建PR、合并PR
+      issues: write          # 允许创建/评论Issue
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
