@@ -82,17 +82,25 @@ class Mog2Detector(BaseDetector):
         # 预分配缓冲区
         self._gray: Optional[np.ndarray] = None
         self._fg_mask: Optional[np.ndarray] = None
+        self._last_shape: Optional[tuple] = None
 
     def detect(self, frame_bgr: np.ndarray) -> Detection:
         if frame_bgr is None or frame_bgr.size == 0:
             return _DETECTION_FALSE
-        # 灰度转换
-        gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+        h, w = frame_bgr.shape[:2]
+        # 灰度转换 - 使用预分配缓冲区
+        if self._gray is None or self._last_shape != (h, w):
+            self._gray = np.empty((h, w), dtype=np.uint8)
+            self._fg_mask = np.empty((h, w), dtype=np.uint8)
+            self._last_shape = (h, w)
+        cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY, dst=self._gray)
         if not self.roi.is_full:
-            gray = self.roi.apply(gray)
-        # 背景减除
-        fg_mask = self.bg_subtractor.apply(gray)
-        # 形态学操作 - 使用原地操作减少内存分配
+            gray = self.roi.apply(self._gray)
+        else:
+            gray = self._gray
+        # 背景减除 - 使用原地操作
+        fg_mask = self.bg_subtractor.apply(gray, self._fg_mask)
+        # 形态学操作 - 使用原地操作
         cv2.morphologyEx(fg_mask, cv2.MORPH_OPEN, self._kernel_open, dst=fg_mask)
         cv2.morphologyEx(fg_mask, cv2.MORPH_CLOSE, self._kernel_close, dst=fg_mask)
         # 计算最大轮廓面积
@@ -136,31 +144,34 @@ class RunningAvgDetector(BaseDetector):
         self._gray_f: Optional[np.ndarray] = None
         self._diff: Optional[np.ndarray] = None
         self._fg_mask: Optional[np.ndarray] = None
+        self._last_shape: Optional[tuple] = None
 
     def detect(self, frame_bgr: np.ndarray) -> Detection:
         if frame_bgr is None or frame_bgr.size == 0:
             return _DETECTION_FALSE
-        # 灰度转换
-        gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+        h, w = frame_bgr.shape[:2]
+        # 灰度转换 - 使用预分配缓冲区
+        if self._gray is None or self._last_shape != (h, w):
+            self._gray = np.empty((h, w), dtype=np.uint8)
+            self._gray_f = np.empty((h, w), dtype=np.float32)
+            self._diff = np.empty((h, w), dtype=np.float32)
+            self._fg_mask = np.empty((h, w), dtype=np.uint8)
+            self._last_shape = (h, w)
+        cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY, dst=self._gray)
         if not self.roi.is_full:
-            gray = self.roi.apply(gray)
-        # 转换为float32 - 使用预分配缓冲区
-        if self._gray_f is None or self._gray_f.shape != gray.shape:
-            self._gray_f = gray.astype(np.float32)
+            gray = self.roi.apply(self._gray)
         else:
-            np.copyto(self._gray_f, gray)
+            gray = self._gray
+        # 转换为float32 - 使用预分配缓冲区
+        np.copyto(self._gray_f, gray)
 
         if self._bg is None:
             self._bg = self._gray_f.copy()
             return _DETECTION_FALSE
 
         # 当前帧与背景的差 - 使用原地操作
-        if self._diff is None or self._diff.shape != gray.shape:
-            self._diff = np.empty_like(self._gray_f)
         cv2.absdiff(self._gray_f, self._bg, dst=self._diff)
         # 阈值化 - 使用预分配缓冲区
-        if self._fg_mask is None or self._fg_mask.shape != gray.shape:
-            self._fg_mask = np.empty(gray.shape, dtype=np.uint8)
         cv2.threshold(
             self._diff.astype(np.uint8), self.cfg.diff_threshold, 255,
             cv2.THRESH_BINARY, dst=self._fg_mask
@@ -196,28 +207,34 @@ class FrameDiffDetector(BaseDetector):
         self._kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
         self._decay = max(1, int(cfg.diff_decay))
         # 预分配缓冲区
+        self._gray: Optional[np.ndarray] = None
         self._diff: Optional[np.ndarray] = None
         self._fg: Optional[np.ndarray] = None
+        self._last_shape: Optional[tuple] = None
 
     def detect(self, frame_bgr: np.ndarray) -> Detection:
         if frame_bgr is None or frame_bgr.size == 0:
             return _DETECTION_FALSE
-        # 灰度转换
-        gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+        h, w = frame_bgr.shape[:2]
+        # 灰度转换 - 使用预分配缓冲区
+        if self._gray is None or self._last_shape != (h, w):
+            self._gray = np.empty((h, w), dtype=np.uint8)
+            self._diff = np.empty((h, w), dtype=np.uint8)
+            self._fg = np.empty((h, w), dtype=np.uint8)
+            self._last_shape = (h, w)
+        cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY, dst=self._gray)
         if not self.roi.is_full:
-            gray = self.roi.apply(gray)
+            gray = self.roi.apply(self._gray)
+        else:
+            gray = self._gray
 
         if self._prev_gray is None:
-            self._prev_gray = gray
+            self._prev_gray = gray.copy()
             return _DETECTION_FALSE
 
         # 帧差 - 使用原地操作
-        if self._diff is None or self._diff.shape != gray.shape:
-            self._diff = np.empty_like(gray)
         cv2.absdiff(gray, self._prev_gray, dst=self._diff)
         # 阈值化 - 使用预分配缓冲区
-        if self._fg is None or self._fg.shape != gray.shape:
-            self._fg = np.empty(gray.shape, dtype=np.uint8)
         cv2.threshold(
             self._diff, self.cfg.diff_threshold, 255, cv2.THRESH_BINARY, dst=self._fg
         )
@@ -228,7 +245,7 @@ class FrameDiffDetector(BaseDetector):
             self._acc_mask = np.zeros_like(self._fg)
         cv2.subtract(self._acc_mask, self._decay, dst=self._acc_mask)
         np.maximum(self._acc_mask, self._fg, out=self._acc_mask)
-        # 更新 prev
+        # 更新 prev - 使用内存视图避免复制
         np.copyto(self._prev_gray, gray)
         area = cv2.countNonZero(self._acc_mask)
         return Detection(area >= self.cfg.min_area, area)

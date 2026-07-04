@@ -40,6 +40,7 @@ services:
     environment:
       - TZ=Asia/Shanghai         # 时区, 影响日志 timestamp
       - PYTHONUNBUFFERED=1       # Python stdout 不缓冲, 实时看日志
+      - PYTHONDONTWRITEBYTECODE=1  # 不生成 .pyc 文件, 节省磁盘
 
     # 优雅停止 (给 worker 15s 处理完当前帧)
     stop_grace_period: 15s
@@ -59,3 +60,7 @@ services:
       timeout: 5s
       retries: 3
       start_period: 15s
+
+    # 安全选项
+    security_opt:
+      - no-new-privileges:true  # 防止权限提升

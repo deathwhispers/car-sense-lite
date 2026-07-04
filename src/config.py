@@ -4,13 +4,14 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 
 import yaml
 
 
 @dataclass
 class DetectorConfig:
+    """检测器配置"""
     # 算法选择: "mog2" / "running_avg" / "frame_diff"
     algorithm: str = "mog2"
 
@@ -39,6 +40,7 @@ class DetectorConfig:
 
 @dataclass
 class ChannelConfig:
+    """通道配置"""
     id: str
     name: str
     source: str
@@ -48,14 +50,16 @@ class ChannelConfig:
 
 @dataclass
 class NotifierConfig:
+    """通知配置"""
     url: str = ""
     timeout: float = 3.0
     retry: int = 2
-    headers: dict = field(default_factory=dict)
+    headers: Dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
 class SupervisorConfig:
+    """监控器配置"""
     workers: int = 2
     log_level: str = "INFO"
     log_file: str = ""
@@ -63,20 +67,23 @@ class SupervisorConfig:
 
 @dataclass
 class AppConfig:
+    """应用配置"""
     supervisor: SupervisorConfig
     notifier: NotifierConfig
     channels: List[ChannelConfig]
 
 
-def _parse_roi(raw) -> Optional[List[Tuple[int, int]]]:
+def _parse_roi(raw: Optional[List[List[int]]]) -> Optional[List[Tuple[int, int]]]:
+    """解析ROI多边形配置"""
     if not raw:
         return None
     return [(int(p[0]), int(p[1])) for p in raw]
 
 
-def load_config(path: str) -> AppConfig:
-    path = os.path.abspath(path)
-    if not os.path.isfile(path):
+def load_config(path: Union[str, Path]) -> AppConfig:
+    """加载配置文件"""
+    path = Path(path).resolve()
+    if not path.is_file():
         raise FileNotFoundError(f"config file not found: {path}")
 
     with open(path, "r", encoding="utf-8") as f:

@@ -20,6 +20,9 @@ RUN apt-get update \
 ENV TZ=Asia/Shanghai
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
+# 创建非root用户提高安全性
+RUN groupadd -r car-sense && useradd -r -g car-sense -d /app -s /sbin/nologin car-sense
+
 WORKDIR /app
 
 # 先装 Python 依赖 (利用 Docker 缓存: 源码变更不重装依赖)
@@ -33,8 +36,11 @@ COPY run.py .
 # 默认配置 (用户挂载自己的 config.yaml 时会被覆盖)
 COPY config.example.yaml /app/config.example.yaml
 
-# 创建日志目录
-RUN mkdir -p /app/logs
+# 创建日志目录并设置权限
+RUN mkdir -p /app/logs && chown -R car-sense:car-sense /app
+
+# 切换到非root用户
+USER car-sense
 
 # 健康检查: 进程在 + config 存在
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
