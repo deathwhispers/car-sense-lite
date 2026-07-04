@@ -12,15 +12,12 @@ from __future__ import annotations
 import argparse
 import logging
 import os
-import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import cv2
 import numpy as np
-
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from src.config import ChannelConfig, DetectorConfig, NotifierConfig
 from src.detector import create_detector

@@ -2,13 +2,10 @@
 from __future__ import annotations
 
 import os
-import sys
 import tempfile
 import unittest
 
 import yaml
-
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from src.config import load_config
 

@@ -4,14 +4,10 @@
 """
 from __future__ import annotations
 
-import os
-import sys
 import unittest
 
 import cv2
 import numpy as np
-
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from src.config import DetectorConfig
 from src.detector import create_detector
