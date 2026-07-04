@@ -2,7 +2,6 @@
 
 用法:
     python run.py -c config.yaml
-    python run.py -c config.yaml --bench
 """
 from __future__ import annotations
 
@@ -26,10 +25,6 @@ def main() -> int:
     parser.add_argument(
         "--check", action="store_true",
         help="仅校验配置和连通性, 不启动 worker"
-    )
-    parser.add_argument(
-        "--bench", action="store_true",
-        help="压测模式: 启动 supervisor 并打印每分钟处理统计"
     )
     args = parser.parse_args()
 

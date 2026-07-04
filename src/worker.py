@@ -1,11 +1,10 @@
 """单路处理 worker：拉流 → 降采样 → 跳帧 → 检测 → 去抖 → 告警
 
 去抖状态机：
-    counter:       连续命中次数
-    cooldown_until: 下次可告警时间戳
-    - 有车: counter += 1
-    - 无车: counter = max(0, counter-1)  (缓慢衰减, 防止抖动)
-    - counter >= trigger_frames 且不在冷却中: 触发告警, 进入冷却
+    DebounceState:
+        - warmup:       启动后 N 秒不告警
+        - counter:      连续命中次数
+        - cooldown:     告警后冷却
 """
 from __future__ import annotations
 
@@ -26,6 +25,46 @@ from .stream import StreamReader
 logger = logging.getLogger("car-sense.worker")
 
 
+class DebounceState:
+    """去抖状态机：warmup → 累积命中 → cooldown"""
+
+    def __init__(self, trigger_frames: int, cooldown_sec: float, warmup_sec: float):
+        self.trigger_frames = trigger_frames
+        self.cooldown_sec = cooldown_sec
+        self.warmup_sec = warmup_sec
+        self.counter = 0
+        self._cooldown_until = 0.0
+        self._start_ts = 0.0
+
+    def start(self) -> None:
+        self._start_ts = time.time()
+
+    def should_alert(self, has_car: bool) -> bool:
+        """检测结果进去抖状态机，返回 True=应触发告警"""
+        now = time.time()
+        if self._start_ts > 0 and now - self._start_ts < self.warmup_sec:
+            if has_car:
+                self.counter = 0
+            return False
+
+        if has_car:
+            self.counter += 1
+        else:
+            if self.counter > 0:
+                self.counter -= 1
+            return False
+
+        if self.counter < self.trigger_frames:
+            return False
+
+        if now < self._cooldown_until:
+            return False
+
+        self._cooldown_until = now + self.cooldown_sec
+        self.counter = 0
+        return True
+
+
 class ChannelWorker:
     """单路通道 worker，运行在自己的线程里 (主进程内)
 
@@ -40,19 +79,18 @@ class ChannelWorker:
         self.detector = create_detector(ch.detector)
         self.stream = StreamReader(ch.source, ch.id)
         self.stats_interval = stats_interval
-        # 预分配 resize 输出 buffer (省每帧 ~0.3ms numpy 分配)
-        # 真实形状在拿到首帧后确定
         self._resize_dst: Optional[np.ndarray] = None
-        self._resize_shape: Optional[Tuple[int, int]] = None  # (h, w)
+        self._resize_shape: Optional[Tuple[int, int]] = None
 
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
-        self._start_ts: float = 0.0  # worker 实际启动时间, 用于 warmup
 
-        # 去抖状态
-        self._counter = 0
-        self._cooldown_until = 0.0
-        # 性能统计
+        self._debounce = DebounceState(
+            ch.detector.trigger_frames,
+            ch.detector.cooldown_sec,
+            ch.detector.warmup_sec,
+        )
+
         self._frame_seq = 0
         self._last_stats_ts = time.time()
         self._frames_processed = 0
@@ -72,19 +110,17 @@ class ChannelWorker:
 
     def _run(self) -> None:
         self.stream.start()
-        self._start_ts = time.time()
+        self._debounce.start()
         logger.info("[%s] worker started, source=%s", self.ch.id,
                     self._sanitize_source(self.ch.source))
         if self.ch.detector.warmup_sec > 0:
             logger.info("[%s] warmup: %.1fs (MOG2 learning background)",
                         self.ch.id, self.ch.detector.warmup_sec)
 
-        # 等待首次连接
         if not self.stream._connected.wait(timeout=10):
             logger.warning("[%s] stream not connected at start, will retry in loop",
                            self.ch.id)
 
-        # 预计算跳帧模数
         frame_skip = self.ch.detector.frame_skip
         skip_mod = frame_skip if frame_skip > 1 else 0
 
@@ -95,16 +131,14 @@ class ChannelWorker:
                 continue
 
             self._frame_seq += 1
-            # 跳帧 - 使用位运算优化（如果frame_skip是2的幂）
             if skip_mod > 0:
-                if skip_mod & (skip_mod - 1) == 0:  # 2的幂
+                if skip_mod & (skip_mod - 1) == 0:
                     if self._frame_seq & (skip_mod - 1) != 0:
                         continue
                 else:
                     if self._frame_seq % skip_mod != 0:
                         continue
 
-            # 降采样 (复用预分配 buffer, 省 numpy 分配开销)
             if self.ch.detector.downsample < 1.0:
                 h, w = frame.shape[:2]
                 ds = self.ch.detector.downsample
@@ -124,7 +158,6 @@ class ChannelWorker:
             else:
                 small = frame
 
-            # 检测
             result = self.detector.detect(small)
             self._on_detection(result.has_car, result.max_area)
             self._frames_processed += 1
@@ -134,28 +167,9 @@ class ChannelWorker:
                     self.ch.id, self._frames_processed, self._alerts_sent)
 
     def _on_detection(self, has_car: bool, max_area: int) -> None:
-        # warmup 期内只让检测器跑, 不告警 (等 MOG2 学到稳定背景)
-        if self._start_ts > 0 and \
-                time.time() - self._start_ts < self.ch.detector.warmup_sec:
-            if has_car:
-                self._counter = 0  # warmup 期不累积
+        if not self._debounce.should_alert(has_car):
             return
 
-        if has_car:
-            self._counter += 1
-        else:
-            if self._counter > 0:
-                self._counter -= 1
-            return
-
-        if self._counter < self.ch.detector.trigger_frames:
-            return
-
-        now = time.time()
-        if now < self._cooldown_until:
-            return  # 冷却中
-
-        # 触发告警
         event = AlertEvent(
             channel_id=self.ch.id,
             channel_name=self.ch.name,
@@ -165,9 +179,7 @@ class ChannelWorker:
         if self.notifier.put_event(event):
             self._alerts_sent += 1
             logger.info("[%s] ALERT seq=%d counter=%d", self.ch.id,
-                        self._frame_seq, self._counter)
-        self._counter = 0
-        self._cooldown_until = now + self.ch.detector.cooldown_sec
+                        self._frame_seq, self._debounce.counter)
 
     def _maybe_log_stats(self) -> None:
         now = time.time()
@@ -176,7 +188,7 @@ class ChannelWorker:
         elapsed = now - self._last_stats_ts
         fps = self._frames_processed / elapsed if elapsed > 0 else 0
         logger.info("[%s] stats: %.1f fps processed, %d alerts, counter=%d",
-                    self.ch.id, fps, self._alerts_sent, self._counter)
+                    self.ch.id, fps, self._alerts_sent, self._debounce.counter)
         self._frames_processed = 0
         self._last_stats_ts = now
 

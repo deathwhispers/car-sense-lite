@@ -39,7 +39,7 @@ class Detection:
 
 
 # 预定义Detection常量，避免重复创建对象
-_DETECTION_FALSE = Detection(False, 0)
+_EMPTY_DETECTION = Detection(False, 0)
 
 
 class BaseDetector:
@@ -50,6 +50,8 @@ class BaseDetector:
     def __init__(self, cfg: DetectorConfig):
         self.cfg = cfg
         self.roi = RoiMask(cfg.roi)
+        self._gray: Optional[np.ndarray] = None
+        self._last_shape: Optional[tuple] = None
 
     def detect(self, frame_bgr: np.ndarray) -> Detection:
         """单帧检测, 返回 Detection(has_car, max_area)"""
@@ -57,7 +59,26 @@ class BaseDetector:
 
     def reset(self) -> None:
         """重置内部状态 (用于镜头切换等)"""
-        raise NotImplementedError
+        self._gray = None
+        self._last_shape = None
+
+    def _ensure_gray(self, frame_bgr: np.ndarray) -> np.ndarray:
+        """灰度转换 (复用预分配缓冲区)"""
+        h, w = frame_bgr.shape[:2]
+        if self._gray is None or self._last_shape != (h, w):
+            self._gray = np.empty((h, w), dtype=np.uint8)
+            self._last_shape = (h, w)
+        cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY, dst=self._gray)
+        if not self.roi.is_full:
+            return self.roi.apply(self._gray)
+        return self._gray
+
+    @staticmethod
+    def _max_contour_area(mask: np.ndarray) -> int:
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            return 0
+        return max((cv2.contourArea(c) for c in contours), default=0)
 
 
 # ============== MOG2 ==============
@@ -72,54 +93,35 @@ class Mog2Detector(BaseDetector):
 
     def __init__(self, cfg: DetectorConfig):
         super().__init__(cfg)
-        self.bg_subtractor = cv2.createBackgroundSubtractorMOG2(
-            history=cfg.history,
-            varThreshold=cfg.var_threshold,
-            detectShadows=False,
-        )
+        self._init_bg_subtractor()
         self._kernel_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
         self._kernel_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
-        # 预分配缓冲区
-        self._gray: Optional[np.ndarray] = None
         self._fg_mask: Optional[np.ndarray] = None
-        self._last_shape: Optional[tuple] = None
 
-    def detect(self, frame_bgr: np.ndarray) -> Detection:
-        if frame_bgr is None or frame_bgr.size == 0:
-            return _DETECTION_FALSE
-        h, w = frame_bgr.shape[:2]
-        # 灰度转换 - 使用预分配缓冲区
-        if self._gray is None or self._last_shape != (h, w):
-            self._gray = np.empty((h, w), dtype=np.uint8)
-            self._fg_mask = np.empty((h, w), dtype=np.uint8)
-            self._last_shape = (h, w)
-        cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY, dst=self._gray)
-        if not self.roi.is_full:
-            gray = self.roi.apply(self._gray)
-        else:
-            gray = self._gray
-        # 背景减除 - 使用原地操作
-        fg_mask = self.bg_subtractor.apply(gray, self._fg_mask)
-        # 形态学操作 - 使用原地操作
-        cv2.morphologyEx(fg_mask, cv2.MORPH_OPEN, self._kernel_open, dst=fg_mask)
-        cv2.morphologyEx(fg_mask, cv2.MORPH_CLOSE, self._kernel_close, dst=fg_mask)
-        # 计算最大轮廓面积
-        max_area = self._max_contour_area(fg_mask)
-        return Detection(max_area >= self.cfg.min_area, max_area)
-
-    def reset(self) -> None:
+    def _init_bg_subtractor(self) -> None:
         self.bg_subtractor = cv2.createBackgroundSubtractorMOG2(
             history=self.cfg.history,
             varThreshold=self.cfg.var_threshold,
             detectShadows=False,
         )
 
-    @staticmethod
-    def _max_contour_area(mask: np.ndarray) -> int:
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        if not contours:
-            return 0
-        return max((cv2.contourArea(c) for c in contours), default=0)
+    def detect(self, frame_bgr: np.ndarray) -> Detection:
+        if frame_bgr is None or frame_bgr.size == 0:
+            return _EMPTY_DETECTION
+        gray = self._ensure_gray(frame_bgr)
+        h, w = gray.shape[:2]
+        if self._fg_mask is None or self._last_shape != (h, w):
+            self._fg_mask = np.empty((h, w), dtype=np.uint8)
+        fg_mask = self.bg_subtractor.apply(gray, self._fg_mask)
+        cv2.morphologyEx(fg_mask, cv2.MORPH_OPEN, self._kernel_open, dst=fg_mask)
+        cv2.morphologyEx(fg_mask, cv2.MORPH_CLOSE, self._kernel_close, dst=fg_mask)
+        max_area = self._max_contour_area(fg_mask)
+        return Detection(max_area >= self.cfg.min_area, max_area)
+
+    def reset(self) -> None:
+        super().reset()
+        self._init_bg_subtractor()
+        self._fg_mask = None
 
 
 # ============== 滑动平均背景 ==============
@@ -136,55 +138,45 @@ class RunningAvgDetector(BaseDetector):
 
     def __init__(self, cfg: DetectorConfig):
         super().__init__(cfg)
-        self._bg: Optional[np.ndarray] = None  # float32 单通道
+        self._bg: Optional[np.ndarray] = None
         self._kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
         self._alpha = max(0.001, min(1.0, cfg.bg_alpha))
-        # 预分配缓冲区
-        self._gray: Optional[np.ndarray] = None
         self._gray_f: Optional[np.ndarray] = None
         self._diff: Optional[np.ndarray] = None
         self._fg_mask: Optional[np.ndarray] = None
-        self._last_shape: Optional[tuple] = None
 
     def detect(self, frame_bgr: np.ndarray) -> Detection:
         if frame_bgr is None or frame_bgr.size == 0:
-            return _DETECTION_FALSE
-        h, w = frame_bgr.shape[:2]
-        # 灰度转换 - 使用预分配缓冲区
-        if self._gray is None or self._last_shape != (h, w):
-            self._gray = np.empty((h, w), dtype=np.uint8)
+            return _EMPTY_DETECTION
+        gray = self._ensure_gray(frame_bgr)
+        h, w = gray.shape[:2]
+        if self._gray_f is None or self._last_shape != (h, w):
             self._gray_f = np.empty((h, w), dtype=np.float32)
             self._diff = np.empty((h, w), dtype=np.float32)
             self._fg_mask = np.empty((h, w), dtype=np.uint8)
-            self._last_shape = (h, w)
-        cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY, dst=self._gray)
-        if not self.roi.is_full:
-            gray = self.roi.apply(self._gray)
-        else:
-            gray = self._gray
-        # 转换为float32 - 使用预分配缓冲区
         np.copyto(self._gray_f, gray)
 
         if self._bg is None:
             self._bg = self._gray_f.copy()
-            return _DETECTION_FALSE
+            return _EMPTY_DETECTION
 
-        # 当前帧与背景的差 - 使用原地操作
         cv2.absdiff(self._gray_f, self._bg, dst=self._diff)
-        # 阈值化 - 使用预分配缓冲区
+        diff_u8 = cv2.convertScaleAbs(self._diff)
         cv2.threshold(
-            self._diff.astype(np.uint8), self.cfg.diff_threshold, 255,
+            diff_u8, self.cfg.diff_threshold, 255,
             cv2.THRESH_BINARY, dst=self._fg_mask
         )
-        # 形态学开 (去小噪点) - 原地操作
         cv2.morphologyEx(self._fg_mask, cv2.MORPH_OPEN, self._kernel, dst=self._fg_mask)
-        # 更新背景 (慢速学习)
         cv2.accumulateWeighted(self._gray_f, self._bg, self._alpha)
         area = cv2.countNonZero(self._fg_mask)
         return Detection(area >= self.cfg.min_area, area)
 
     def reset(self) -> None:
+        super().reset()
         self._bg = None
+        self._gray_f = None
+        self._diff = None
+        self._fg_mask = None
 
 
 # ============== 帧间差分 ==============
@@ -203,56 +195,44 @@ class FrameDiffDetector(BaseDetector):
     def __init__(self, cfg: DetectorConfig):
         super().__init__(cfg)
         self._prev_gray: Optional[np.ndarray] = None
-        self._acc_mask: Optional[np.ndarray] = None  # 累积 mask, 滑动衰减
+        self._acc_mask: Optional[np.ndarray] = None
         self._kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
         self._decay = max(1, int(cfg.diff_decay))
-        # 预分配缓冲区
-        self._gray: Optional[np.ndarray] = None
         self._diff: Optional[np.ndarray] = None
         self._fg: Optional[np.ndarray] = None
-        self._last_shape: Optional[tuple] = None
 
     def detect(self, frame_bgr: np.ndarray) -> Detection:
         if frame_bgr is None or frame_bgr.size == 0:
-            return _DETECTION_FALSE
-        h, w = frame_bgr.shape[:2]
-        # 灰度转换 - 使用预分配缓冲区
-        if self._gray is None or self._last_shape != (h, w):
-            self._gray = np.empty((h, w), dtype=np.uint8)
+            return _EMPTY_DETECTION
+        gray = self._ensure_gray(frame_bgr)
+        h, w = gray.shape[:2]
+        if self._diff is None or self._last_shape != (h, w):
             self._diff = np.empty((h, w), dtype=np.uint8)
             self._fg = np.empty((h, w), dtype=np.uint8)
-            self._last_shape = (h, w)
-        cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY, dst=self._gray)
-        if not self.roi.is_full:
-            gray = self.roi.apply(self._gray)
-        else:
-            gray = self._gray
 
         if self._prev_gray is None:
             self._prev_gray = gray.copy()
-            return _DETECTION_FALSE
+            return _EMPTY_DETECTION
 
-        # 帧差 - 使用原地操作
         cv2.absdiff(gray, self._prev_gray, dst=self._diff)
-        # 阈值化 - 使用预分配缓冲区
         cv2.threshold(
             self._diff, self.cfg.diff_threshold, 255, cv2.THRESH_BINARY, dst=self._fg
         )
-        # 形态学开 (去单帧小噪点) - 原地操作
         cv2.morphologyEx(self._fg, cv2.MORPH_OPEN, self._kernel, dst=self._fg)
-        # 累积 mask: 每帧减 N (饱和减) 然后取 max
         if self._acc_mask is None:
             self._acc_mask = np.zeros_like(self._fg)
         cv2.subtract(self._acc_mask, self._decay, dst=self._acc_mask)
         np.maximum(self._acc_mask, self._fg, out=self._acc_mask)
-        # 更新 prev - 使用内存视图避免复制
         np.copyto(self._prev_gray, gray)
         area = cv2.countNonZero(self._acc_mask)
         return Detection(area >= self.cfg.min_area, area)
 
     def reset(self) -> None:
+        super().reset()
         self._prev_gray = None
         self._acc_mask = None
+        self._diff = None
+        self._fg = None
 
 
 # ============== 工厂 ==============

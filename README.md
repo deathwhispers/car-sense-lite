@@ -3,7 +3,7 @@
 > 边缘设备来车检测器 · 4 核 4G 稳定扛 20 路 RTSP · 纯 CPU 推理最快 0.7ms/帧
 
 [![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)](https://www.python.org)
-[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![License](https://img.shields.io/badge/License-Apache%202.0-green.svg)](LICENSE)
 [![OpenCV](https://img.shields.io/badge/OpenCV-4.8+-red.svg)](https://opencv.org)
 [![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20ARM64%20%7C%20x86_64-lightgrey)](#)
 
@@ -696,4 +696,4 @@ cv2.imwrite(f"/tmp/debug_{self.ch.id}.jpg", small)
 
 ## License
 
-MIT
+Apache 2.0

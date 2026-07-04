@@ -102,9 +102,10 @@ class StreamReader:
             with self._lock:
                 self._frame = frame
 
-    def _open(self) -> None:
+    def     _open(self) -> None:
         if self._is_local:
-            path = self.source[7:] if self.source.startswith("file://") else self.source
+            _FILE_PREFIX = "file://"
+            path = self.source[len(_FILE_PREFIX):] if self.source.startswith(_FILE_PREFIX) else self.source
             cap = cv2.VideoCapture(path)
         else:
             cap = cv2.VideoCapture(self.source, cv2.CAP_FFMPEG)
